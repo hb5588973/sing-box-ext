@@ -103,6 +103,7 @@ func OutboundRegistry() *outbound.Registry {
 	vless.RegisterOutbound(registry)
 	anytls.RegisterOutbound(registry)
 
+	masque.RegisterOutbound(registry)
 	registerQUICOutbounds(registry)
 	registerTailcatOutbound(registry)
 	registerStubForRemovedOutbounds(registry)

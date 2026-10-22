@@ -29,6 +29,7 @@ const (
 	TypeOpenConnect        = "openconnect"
 	TypeOpenVPNClient      = "openvpn-client"
 	TypeOpenVPNServer      = "openvpn-server"
+	TypeMASQUE 			   = "masque"
 	TypeMASQUEClient       = "masque-client"
 	TypeMASQUEServer       = "masque-server"
 	TypeTailscale          = "tailscale"
