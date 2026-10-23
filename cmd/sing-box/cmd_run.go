@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	stdjson "encoding/json"
 	"io"
+	"log/slog"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -16,6 +18,7 @@ import (
 	C "github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing-box/log"
 	"github.com/sagernet/sing-box/option"
+	"github.com/sagernet/sing-box/protocol/masque/autoreg"
 	E "github.com/sagernet/sing/common/exceptions"
 	"github.com/sagernet/sing/common/json"
 	"github.com/sagernet/sing/common/json/badjson"
@@ -58,6 +61,7 @@ func readConfigAt(path string) (*OptionsEntry, error) {
 	if err != nil {
 		return nil, E.Cause(err, "read config at ", path)
 	}
+	configContent = injectMasqueOutboundsOnce(configContent)
 	options, err := json.UnmarshalExtendedContext[option.Options](globalCtx, configContent)
 	if err != nil {
 		return nil, E.Cause(err, "decode config at ", path)
@@ -67,6 +71,71 @@ func readConfigAt(path string) (*OptionsEntry, error) {
 		path:    path,
 		options: options,
 	}, nil
+}
+
+// masqueAutoregDone guards the one-shot registration/injection: a process reads
+// the config at most once for run/check, but multiple -c files would otherwise
+// register and append the same outbounds repeatedly.
+var masqueAutoregDone bool
+
+// injectMasqueOutboundsOnce registers (or reuses) the Cloudflare MASQUE account
+// on first use and merges the generated outbounds into the config, in memory
+// only. Any failure is logged and the config is loaded unchanged, so sing-box
+// still starts without network access or a writable executable directory.
+func injectMasqueOutboundsOnce(configContent []byte) []byte {
+	if masqueAutoregDone {
+		return configContent
+	}
+	masqueAutoregDone = true
+
+	exePath, err := os.Executable()
+	if err != nil {
+		slog.Error("masque: locate executable failed", "err", err)
+		return configContent
+	}
+	exeDir := filepath.Dir(exePath)
+
+	_, outPath, regErr := autoreg.Register(exeDir)
+	if regErr != nil {
+		slog.Error("masque: auto registration failed", "err", regErr)
+		return configContent
+	}
+	slog.Info("masque: config fragment ready", "path", outPath)
+
+	fragmentContent, err := os.ReadFile(outPath)
+	if err != nil {
+		slog.Error("masque: read generated fragment failed", "path", outPath, "err", err)
+		return configContent
+	}
+	var userConf map[string]any
+	if err = stdjson.Unmarshal(configContent, &userConf); err != nil {
+		slog.Error("masque: parse config failed", "err", err)
+		return configContent
+	}
+	var fragConf map[string]any
+	if err = stdjson.Unmarshal(fragmentContent, &fragConf); err != nil {
+		slog.Error("masque: parse fragment failed", "err", err)
+		return configContent
+	}
+	newOutbounds, _ := fragConf["outbounds"].([]any)
+	if len(newOutbounds) == 0 {
+		return configContent
+	}
+	userOutbounds, _ := userConf["outbounds"].([]any)
+	for _, outbound := range userOutbounds {
+		if m, ok := outbound.(map[string]any); ok && m["type"] == "masque" {
+			slog.Info("masque: config already has a masque outbound, skipping injection")
+			return configContent
+		}
+	}
+	userConf["outbounds"] = append(userOutbounds, newOutbounds...)
+	newBytes, err := stdjson.MarshalIndent(userConf, "", "  ")
+	if err != nil {
+		slog.Error("masque: serialize config failed", "err", err)
+		return configContent
+	}
+	slog.Info("masque: injected masque outbounds", "count", len(newOutbounds))
+	return newBytes
 }
 
 func readConfig() ([]*OptionsEntry, error) {
