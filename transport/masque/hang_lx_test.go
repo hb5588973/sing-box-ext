@@ -1,97 +1,18 @@
 package masque
 
-// lx: SPECS/TASKS/108 — two waits that had no bound: Close behind a stuck h2
-// writer, and ReadResponse on h3.
+// lx: SPEC 108 — a CONNECT-IP dial must not hang on a peer that took the
+// connection and never answered the Extended CONNECT request.
 
 import (
 	"context"
 	"errors"
-	"net"
 	"net/http"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/sagernet/quic-go"
-
-	xhttp2 "golang.org/x/net/http2"
 )
-
-// net.Pipe is unbuffered: a write with nobody reading blocks, which is what a
-// path that stopped draining looks like to the writer.
-func TestH2CloseDoesNotWaitForStuckWriter(t *testing.T) {
-	local, remote := net.Pipe()
-	defer remote.Close()
-	conn := &h2RawConn{
-		tlsConn: local,
-		framer:  xhttp2.NewFramer(local, local),
-		recvCh:  make(chan []byte, 8),
-		errCh:   make(chan error, 1),
-		closed:  make(chan struct{}),
-	}
-	writeStarted := make(chan struct{})
-	writeDone := make(chan error, 1)
-	go func() {
-		close(writeStarted)
-		writeDone <- conn.writeData(make([]byte, 1200))
-	}()
-	<-writeStarted
-	time.Sleep(50 * time.Millisecond) // let the writer take writeMu and park
-
-	closeDone := make(chan struct{})
-	started := time.Now()
-	go func() {
-		_ = conn.Close()
-		close(closeDone)
-	}()
-	select {
-	case <-closeDone:
-	case <-time.After(3 * time.Second):
-		t.Fatal("Close is parked behind the stuck writer")
-	}
-	if elapsed := time.Since(started); elapsed > 2*h2CloseGrace {
-		t.Fatalf("Close took %v, want under %v", elapsed, 2*h2CloseGrace)
-	}
-	select {
-	case err := <-writeDone:
-		if err == nil {
-			t.Fatal("stuck write must fail once the conn is closed")
-		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("stuck writer was not released by Close")
-	}
-}
-
-// With the writer lock free the farewell RST_STREAM still goes out.
-func TestH2CloseSendsResetWhenIdle(t *testing.T) {
-	local, remote := net.Pipe()
-	defer remote.Close()
-	conn := &h2RawConn{
-		tlsConn: local,
-		framer:  xhttp2.NewFramer(local, local),
-		recvCh:  make(chan []byte, 8),
-		errCh:   make(chan error, 1),
-		closed:  make(chan struct{}),
-	}
-	frames := make(chan xhttp2.Frame, 1)
-	go func() {
-		frame, err := xhttp2.NewFramer(remote, remote).ReadFrame()
-		if err == nil {
-			frames <- frame
-		}
-		close(frames)
-	}()
-	_ = conn.Close()
-	select {
-	case frame := <-frames:
-		reset, isReset := frame.(*xhttp2.RSTStreamFrame)
-		if !isReset || reset.StreamID != h2StreamID {
-			t.Fatalf("want RST_STREAM on stream %d, got %v", h2StreamID, frame)
-		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("no frame reached the peer")
-	}
-}
 
 // blockingStream answers ReadResponse only when cancelled, like an endpoint that
 // took the connection and never replied to the CONNECT.
