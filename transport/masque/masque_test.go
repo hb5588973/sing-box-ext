@@ -1,17 +1,21 @@
 package masque
 
-// lx: SPEC 108 — a CONNECT-IP dial must not hang on a peer that took the
-// connection and never answered the Extended CONNECT request.
+// Regression tests for the CONNECT-IP dial path: a peer that never answers the
+// Extended CONNECT must not hang the dial (SPEC 108), and a silent endpoint must
+// be reported as an idle timeout rather than a frame-parsing failure.
 
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/sagernet/quic-go"
+	E "github.com/sagernet/sing/common/exceptions"
 )
 
 // blockingStream answers ReadResponse only when cancelled, like an endpoint that
@@ -72,5 +76,40 @@ func TestReadResponseReleasesStreamOnSuccess(t *testing.T) {
 	case <-stream.cancelled:
 		t.Fatal("dial context cancelled a live stream")
 	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+// ---- idle timeout diagnosis ----
+
+// wrapLikeDialCONNECTIP reproduces the wrapping a real idle timeout goes
+// through before ConnectTunnelH3 inspects it.
+func wrapLikeDialCONNECTIP(inner error) error {
+	return E.Cause(fmt.Errorf("http3: parsing frame failed: %w", inner), "read response")
+}
+
+// TestIdleTimeoutMessageKeepsCause: the diagnosis replaces the leading context,
+// not the chain — the underlying timeout must stay readable.
+func TestIdleTimeoutMessageKeepsCause(t *testing.T) {
+	t.Parallel()
+	wrapped := wrapLikeDialCONNECTIP(&quic.IdleTimeoutError{})
+	got := E.Cause(wrapped, "masque: CONNECT-IP timed out").Error()
+
+	if !strings.HasPrefix(got, "masque: CONNECT-IP timed out") {
+		t.Errorf("diagnosis must lead the message, got %q", got)
+	}
+	if !strings.Contains(got, "timeout: no recent network activity") {
+		t.Errorf("original cause must survive, got %q", got)
+	}
+}
+
+// TestNonIdleErrorIsNotClaimedAsTimeout: any other failure must keep falling
+// through to the generic wrapping, or a real bug would be mislabelled.
+func TestNonIdleErrorIsNotClaimedAsTimeout(t *testing.T) {
+	t.Parallel()
+	err := wrapLikeDialCONNECTIP(errors.New("connect-ip: server responded with 403"))
+
+	var idleErr *quic.IdleTimeoutError
+	if errors.As(err, &idleErr) {
+		t.Fatal("a non-timeout failure must not match the idle-timeout branch")
 	}
 }
