@@ -44,11 +44,11 @@ type Outbound struct {
 	dnsRouter adapter.DNSRouter
 	profile   masque.Profile
 
-	server    M.Socksaddr
-	uri       string
-	mtu       uint32
-	prefixes  []netip.Prefix
-	tlsConfig *stdtls.Config
+	server     M.Socksaddr
+	uri        string
+	mtu        uint32
+	prefixes   []netip.Prefix
+	tlsConfig  *stdtls.Config
 	quicConfig *quic.Config
 
 	runMu  sync.Mutex
@@ -57,43 +57,31 @@ type Outbound struct {
 }
 
 type session struct {
-	device device.Device
-	closer io.Closer
-	ipConn masque.IpConn
-	ctx    context.Context
-	cancel context.CancelFunc
+	device   device.Device
+	closer   io.Closer
+	ipConn   masque.IpConn
+	ctx      context.Context
+	cancel   context.CancelFunc
 	teardown sync.Once
 }
 
 func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextLogger, tag string, options option.MASQUEOutboundOptions) (adapter.Outbound, error) {
-	log.Error("masque: NewOutbound ENTERED, tag=", tag)
-
 	profile, err := masque.ParseProfile(options.Profile)
 	if err != nil {
-		log.Error("masque: ParseProfile failed: ", err)
 		return nil, err
 	}
-	log.Error("masque: profile parsed, RequestProtocol=", profile.RequestProtocol, " DefaultSNI=", profile.DefaultSNI, " DefaultURI=", profile.DefaultURI)
 
 	uri := options.URI
 	if uri == "" {
 		uri = profile.DefaultURI
 	}
 	if uri == "" {
-		log.Error("masque: uri is empty after fallback")
 		return nil, E.New("masque: uri is required for the standard profile")
 	}
-	log.Error("masque: uri=", uri)
 
 	prefixes, err := parsePrefixes(options.IP, options.IPv6)
 	if err != nil {
-		log.Error("masque: parsePrefixes failed: ", err)
 		return nil, err
-	}
-	
-	log.Error("masque: prefixes count=", len(prefixes))
-	for _, p := range prefixes {
-		log.Error("masque: prefix=", p.String())
 	}
 
 	var privKey *ecdsa.PrivateKey
@@ -101,25 +89,16 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 	if options.PrivateKey != "" {
 		privKey, err = parseECPrivateKey(options.PrivateKey)
 		if err != nil {
-			log.Error("masque: parseECPrivateKey failed: ", err)
 			return nil, E.Cause(err, "parse private_key")
 		}
-		log.Error("masque: private_key parsed OK")
-	} else {
-		log.Error("masque: private_key is empty")
 	}
 	if options.PublicKey != "" {
 		pubKey, err = parseECPublicKey(options.PublicKey)
 		if err != nil {
-			log.Error("masque: parseECPublicKey failed: ", err)
 			return nil, E.Cause(err, "parse public_key")
 		}
-		log.Error("masque: public_key parsed OK")
-	} else {
-		log.Error("masque: public_key is empty")
 	}
 	if profile.PinPublicKey && (privKey == nil || pubKey == nil) {
-		log.Error("masque: PinPublicKey is true but privKey or pubKey is nil")
 		return nil, E.New("masque: private_key and public_key are required for the cloudflare profile")
 	}
 
@@ -133,15 +112,12 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 	if sni == "" {
 		sni = options.Server
 	}
-	log.Error("masque: sni=", sni)
 
 	insecure := options.TLS != nil && options.TLS.Insecure
 	tlsConfig, err := masque.PrepareTLSConfig(profile, privKey, pubKey, sni, insecure)
 	if err != nil {
-		log.Error("masque: PrepareTLSConfig failed: ", err)
 		return nil, err
 	}
-	log.Error("masque: PrepareTLSConfig OK, ServerName=", tlsConfig.ServerName)
 
 	mtu := options.MTU
 	if mtu == 0 {
@@ -150,10 +126,8 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 
 	outboundDialer, err := dialer.New(ctx, options.DialerOptions, options.ServerIsDomain())
 	if err != nil {
-		log.Error("masque: dialer.New failed: ", err)
 		return nil, err
 	}
-	log.Error("masque: dialer.New OK")
 
 	quicConfig := &quic.Config{
 		EnableDatagrams: true,
@@ -161,7 +135,6 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 	}
 
 	networkList := options.NetworkList.Build()
-	log.Error("masque: networkList built, len=", len(networkList))
 
 	return &Outbound{
 		Adapter:    outbound.NewAdapterWithDialerOptions(C.TypeMASQUE, tag, networkList, options.DialerOptions),
