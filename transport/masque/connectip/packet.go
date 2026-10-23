@@ -1,7 +1,9 @@
 package connectip
 
-// Vendored from connect-ip-go (MIT). Builds an ICMP "packet too big" reply when
-// an outgoing IP packet exceeds the tunnel's datagram size.
+// Vendored from connect-ip-go (MIT). IP packet rewrite helpers shared by the
+// CONNECT-IP data path: the IPv4 header checksum recomputed after a TTL
+// decrement, and the ICMP "packet too big" reply synthesized when an outgoing
+// packet exceeds the tunnel's datagram budget.
 
 import (
 	"encoding/binary"
@@ -13,6 +15,31 @@ import (
 	"golang.org/x/net/ipv6"
 )
 
+// ---- IPv4 header checksum ----
+
+// calculateIPv4Checksum recomputes the IPv4 header checksum over the whole
+// header the caller passes (header[:IHL*4]), so options (IHL>5) are covered.
+// lx: SPEC 022 #6 — the vendored original took a fixed [20]byte and summed only
+// the first 20 bytes, yielding a wrong checksum when options were present. The
+// checksum field itself (offset 10-11) is skipped.
+func calculateIPv4Checksum(header []byte) uint16 {
+	var sum uint32
+	for i := 0; i+1 < len(header); i += 2 {
+		if i == 10 {
+			continue // skip checksum field
+		}
+		sum += uint32(binary.BigEndian.Uint16(header[i : i+2]))
+	}
+	for (sum >> 16) > 0 {
+		sum = (sum & 0xffff) + (sum >> 16)
+	}
+	return ^uint16(sum)
+}
+
+// ---- ICMP packet too big ----
+
+// composeICMPTooLargePacket builds an ICMP "packet too big" reply when an
+// outgoing IP packet exceeds the tunnel's datagram size.
 func composeICMPTooLargePacket(b []byte, mtu int) ([]byte, error) {
 	if len(b) == 0 {
 		return nil, errors.New("connect-ip: empty packet")
