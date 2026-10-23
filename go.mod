@@ -198,3 +198,8 @@ require (
 	lukechampine.com/blake3 v1.3.0 // indirect
 	zombiezen.com/go/capnproto2 v2.18.2+incompatible // indirect
 )
+
+// AmneziaWG 2.0/3.x: merged sagernet/wireguard-go fork (AWG obfuscation
+// grafted onto the upstream base, including the newer upstream API surface
+// (Peer.WritePackets, staging/backpressure) that transport/wireguard relies on.
+replace github.com/sagernet/wireguard-go => ./submodules/wireguard-go

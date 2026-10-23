@@ -58,6 +58,14 @@ func NewEndpoint(options EndpointOptions) (*Endpoint, error) {
 	if options.ListenPort != 0 {
 		ipcConf += "\nlisten_port=" + F.ToString(options.ListenPort)
 	}
+	// Append the AmneziaWG device-global obfuscation lines (jc=/s1=/h1=/i1=…).
+	// awgIpcLines is tag-gated: with `with_awg` it formats the parameters,
+	// without it a non-empty AWG config returns an explicit error.
+	awgLines, err := awgIpcLines(options.AmneziaWG)
+	if err != nil {
+		return nil, err
+	}
+	ipcConf += awgLines
 	var peers []peerConfig
 	for peerIndex, rawPeer := range options.Peers {
 		peer := peerConfig{
@@ -106,8 +114,32 @@ func NewEndpoint(options EndpointOptions) (*Endpoint, error) {
 		return nil, err
 	}
 	allowedAddresses := allowedIPSet.Prefixes()
+	// AmneziaWG's s4 prepends junk bytes to every transport (data) message, so an
+	// AWG endpoint needs a lower MTU than plain WireGuard. s3 pads only
+	// cookie-reply messages, never data packets, so it is not part of the
+	// per-transport overhead: awgJunk = s4.
+	awgJunk := options.AmneziaWG.S4
 	if options.MTU == 0 {
 		options.MTU = 1408
+		// With junk active the plain 1408 default overflows the path, so fall
+		// back to the recommended AWG client MTU instead of shipping (and then
+		// warning about) a value we picked ourselves.
+		if awgJunk > 0 {
+			options.MTU = 1280
+		}
+	}
+	// Warn when an explicitly-set MTU is still too high for the junk overhead:
+	// the handshake succeeds but transport packets fail with EMSGSIZE. The path
+	// budget assumes a conservative 1492-byte (PPPoE) path; raw Ethernet is 1500.
+	if awgJunk > 0 {
+		const pathMTU = 1492
+		const wgOverhead = 28 + 32 // UDP/IP + WireGuard transport header
+		if budget := pathMTU - wgOverhead - int(awgJunk); int(options.MTU) > budget {
+			options.Logger.Warn(fmt.Sprintf(
+				"amneziawg: mtu %d may be too high for s4 junk (%d bytes); transport packets can exceed a %d-byte path and fail with \"message too long\". Consider mtu <= %d (or 1280)",
+				options.MTU, awgJunk, pathMTU, budget,
+			))
+		}
 	}
 	return &Endpoint{
 		options:        options,
