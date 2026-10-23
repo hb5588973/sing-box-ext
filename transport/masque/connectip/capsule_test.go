@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/sagernet/quic-go/http3"
+	"github.com/sagernet/quic-go/quicvarint"
 )
 
 func TestRouteAdvertisementRoundTrip(t *testing.T) {
@@ -41,34 +42,35 @@ func TestRouteAdvertisementRoundTrip(t *testing.T) {
 	}
 }
 
-func TestAddressAssignRoundTrip(t *testing.T) {
+func TestAddressAssignParse(t *testing.T) {
 	t.Parallel()
-	orig := &addressAssignCapsule{AssignedAddresses: []AssignedAddress{
-		{RequestID: 0, IPPrefix: netip.MustParsePrefix("172.16.0.2/32")},
-		{RequestID: 1, IPPrefix: netip.MustParsePrefix("2606:4700::/128")},
-	}}
-	encoded := orig.append(nil)
+	// ADDRESS_ASSIGN payload: one IPv4 /32 (request id 0) and one IPv6 /128
+	// (request id 1), encoded as RFC 9484 §5.1 specifies.
+	var payload []byte
+	payload = quicvarint.Append(payload, 0)
+	payload = append(payload, 4)
+	payload = append(payload, netip.MustParseAddr("172.16.0.2").AsSlice()...)
+	payload = append(payload, 32)
+	payload = quicvarint.Append(payload, 1)
+	payload = append(payload, 6)
+	payload = append(payload, netip.MustParseAddr("2606:4700::").AsSlice()...)
+	payload = append(payload, 128)
 
-	// lx: quic-go v0.61 replaced ParseCapsule with the stateful CapsuleParser.
-	typ, body, err := http3.NewCapsuleParser(bytes.NewReader(encoded)).Next()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if typ != capsuleTypeAddressAssign {
-		t.Fatalf("wrong capsule type: %d", typ)
-	}
-	parsed, err := parseAddressAssignCapsule(body)
+	parsed, err := parseAddressAssignCapsule(bytes.NewReader(payload))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(parsed.AssignedAddresses) != 2 {
 		t.Fatalf("expected 2 addresses, got %d", len(parsed.AssignedAddresses))
 	}
-	if parsed.AssignedAddresses[0].IPPrefix != orig.AssignedAddresses[0].IPPrefix {
-		t.Fatalf("v4 prefix mismatch: %v", parsed.AssignedAddresses[0].IPPrefix)
+	if got := parsed.AssignedAddresses[0].IPPrefix; got != netip.MustParsePrefix("172.16.0.2/32") {
+		t.Fatalf("v4 prefix mismatch: %v", got)
 	}
-	if parsed.AssignedAddresses[1].IPPrefix != orig.AssignedAddresses[1].IPPrefix {
-		t.Fatalf("v6 prefix mismatch: %v", parsed.AssignedAddresses[1].IPPrefix)
+	if got := parsed.AssignedAddresses[1].IPPrefix; got != netip.MustParsePrefix("2606:4700::/128") {
+		t.Fatalf("v6 prefix mismatch: %v", got)
+	}
+	if parsed.AssignedAddresses[1].RequestID != 1 {
+		t.Fatalf("request id mismatch: %d", parsed.AssignedAddresses[1].RequestID)
 	}
 }
 

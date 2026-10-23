@@ -30,24 +30,6 @@ type AssignedAddress struct {
 	IPPrefix  netip.Prefix
 }
 
-func (a AssignedAddress) len() int {
-	return quicvarint.Len(a.RequestID) + 1 + a.IPPrefix.Addr().BitLen()/8 + 1
-}
-
-type addressRequestCapsule struct {
-	RequestedAddresses []RequestedAddress
-}
-
-// RequestedAddress represents a Requested Address within an ADDRESS_REQUEST capsule.
-type RequestedAddress struct {
-	RequestID uint64
-	IPPrefix  netip.Prefix
-}
-
-func (r RequestedAddress) len() int {
-	return quicvarint.Len(r.RequestID) + 1 + r.IPPrefix.Addr().BitLen()/8 + 1
-}
-
 func parseAddressAssignCapsule(r io.Reader) (*addressAssignCapsule, error) {
 	var assignedAddresses []AssignedAddress
 	for {
@@ -61,65 +43,6 @@ func parseAddressAssignCapsule(r io.Reader) (*addressAssignCapsule, error) {
 		assignedAddresses = append(assignedAddresses, AssignedAddress{RequestID: requestID, IPPrefix: prefix})
 	}
 	return &addressAssignCapsule{AssignedAddresses: assignedAddresses}, nil
-}
-
-func (c *addressAssignCapsule) append(b []byte) []byte {
-	totalLen := 0
-	for _, addr := range c.AssignedAddresses {
-		totalLen += addr.len()
-	}
-
-	b = quicvarint.Append(b, uint64(capsuleTypeAddressAssign))
-	b = quicvarint.Append(b, uint64(totalLen))
-
-	for _, addr := range c.AssignedAddresses {
-		b = quicvarint.Append(b, addr.RequestID)
-		if addr.IPPrefix.Addr().Is4() {
-			b = append(b, 4)
-		} else {
-			b = append(b, 6)
-		}
-		b = append(b, addr.IPPrefix.Addr().AsSlice()...)
-		b = append(b, byte(addr.IPPrefix.Bits()))
-	}
-	return b
-}
-
-func parseAddressRequestCapsule(r io.Reader) (*addressRequestCapsule, error) {
-	var requestedAddresses []RequestedAddress
-	for {
-		requestID, prefix, err := parseAddress(r)
-		if err != nil {
-			if err == io.EOF {
-				break
-			}
-			return nil, err
-		}
-		requestedAddresses = append(requestedAddresses, RequestedAddress{RequestID: requestID, IPPrefix: prefix})
-	}
-	return &addressRequestCapsule{RequestedAddresses: requestedAddresses}, nil
-}
-
-func (c *addressRequestCapsule) append(b []byte) []byte {
-	var totalLen int
-	for _, addr := range c.RequestedAddresses {
-		totalLen += addr.len()
-	}
-
-	b = quicvarint.Append(b, uint64(capsuleTypeAddressRequest))
-	b = quicvarint.Append(b, uint64(totalLen))
-
-	for _, addr := range c.RequestedAddresses {
-		b = quicvarint.Append(b, addr.RequestID)
-		if addr.IPPrefix.Addr().Is4() {
-			b = append(b, 4)
-		} else {
-			b = append(b, 6)
-		}
-		b = append(b, addr.IPPrefix.Addr().AsSlice()...)
-		b = append(b, byte(addr.IPPrefix.Bits()))
-	}
-	return b
 }
 
 func parseAddress(r io.Reader) (requestID uint64, prefix netip.Prefix, _ error) {
@@ -177,9 +100,6 @@ type IPRoute struct {
 }
 
 func (r IPRoute) len() int { return 1 + r.StartIP.BitLen()/8 + r.EndIP.BitLen()/8 + 1 }
-
-// Prefixes returns the prefixes that this IP address range covers.
-func (r IPRoute) Prefixes() []netip.Prefix { return rangeToPrefixes(r.StartIP, r.EndIP) }
 
 func parseRouteAdvertisementCapsule(r io.Reader) (*routeAdvertisementCapsule, error) {
 	var ranges []IPRoute

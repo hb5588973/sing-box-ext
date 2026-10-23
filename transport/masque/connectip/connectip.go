@@ -97,9 +97,6 @@ type Conn struct {
 	str    Http3Stream
 	writes chan writeCapsule
 
-	assignedAddressNotify chan struct{}
-	availableRoutesNotify chan struct{}
-
 	mu                sync.Mutex
 	peerAddresses     []netip.Prefix
 	localRoutes       []IPRoute
@@ -120,11 +117,9 @@ type Conn struct {
 // NewProxiedConn wraps an already-established CONNECT-IP request stream.
 func NewProxiedConn(str Http3Stream) *Conn {
 	c := &Conn{
-		str:                   str,
-		writes:                make(chan writeCapsule),
-		assignedAddressNotify: make(chan struct{}, 1),
-		availableRoutesNotify: make(chan struct{}, 1),
-		closeChan:             make(chan struct{}),
+		str:       str,
+		writes:    make(chan writeCapsule),
+		closeChan: make(chan struct{}),
 	}
 	go func() {
 		if err := c.readFromStream(); err != nil {
@@ -163,19 +158,6 @@ func (c *Conn) AdvertiseRoute(ctx context.Context, routes []IPRoute) error {
 	return c.sendCapsule(ctx, &routeAdvertisementCapsule{IPAddressRanges: routes})
 }
 
-// AssignAddresses assigns address prefixes to the peer. Only the addresses from
-// the most recent call are active.
-func (c *Conn) AssignAddresses(ctx context.Context, prefixes []netip.Prefix) error {
-	c.mu.Lock()
-	c.peerAddresses = slices.Clone(prefixes)
-	c.mu.Unlock()
-	capsule := &addressAssignCapsule{AssignedAddresses: make([]AssignedAddress, 0, len(prefixes))}
-	for _, p := range prefixes {
-		capsule.AssignedAddresses = append(capsule.AssignedAddresses, AssignedAddress{IPPrefix: p})
-	}
-	return c.sendCapsule(ctx, capsule)
-}
-
 func (c *Conn) sendCapsule(ctx context.Context, capsule appendable) error {
 	res := make(chan error, 1)
 	select {
@@ -190,35 +172,6 @@ func (c *Conn) sendCapsule(ctx context.Context, capsule appendable) error {
 		return c.closeErr
 	case <-ctx.Done():
 		return ctx.Err()
-	}
-}
-
-// LocalPrefixes returns the prefixes the peer currently assigned. The peer can
-// change the assignment at any time, so call this in a loop if you care.
-func (c *Conn) LocalPrefixes(ctx context.Context) ([]netip.Prefix, error) {
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case <-c.closeChan:
-		return nil, c.closeErr
-	case <-c.assignedAddressNotify:
-		c.mu.Lock()
-		defer c.mu.Unlock()
-		return c.assignedAddresses, nil
-	}
-}
-
-// Routes returns the routes the peer currently advertised.
-func (c *Conn) Routes(ctx context.Context) ([]IPRoute, error) {
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case <-c.closeChan:
-		return nil, c.closeErr
-	case <-c.availableRoutesNotify:
-		c.mu.Lock()
-		defer c.mu.Unlock()
-		return c.availableRoutes, nil
 	}
 }
 
@@ -248,14 +201,7 @@ func (c *Conn) readFromStream() error {
 			c.mu.Lock()
 			c.assignedAddresses = prefixes
 			c.mu.Unlock()
-			select {
-			case c.assignedAddressNotify <- struct{}{}:
-			default:
-			}
 		case capsuleTypeAddressRequest:
-			if _, err := parseAddressRequestCapsule(cr); err != nil {
-				return err
-			}
 			return errors.New("connect-ip: address request not yet supported")
 		case capsuleTypeRouteAdvertisement:
 			capsule, err := parseRouteAdvertisementCapsule(cr)
@@ -265,10 +211,6 @@ func (c *Conn) readFromStream() error {
 			c.mu.Lock()
 			c.availableRoutes = capsule.IPAddressRanges
 			c.mu.Unlock()
-			select {
-			case c.availableRoutesNotify <- struct{}{}:
-			default:
-			}
 		default:
 			return fmt.Errorf("unknown capsule type: %d", t)
 		}
